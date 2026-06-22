@@ -25,7 +25,19 @@ export default {
   name: Events.MessageCreate,
   async execute(message, client) {
     try {
-      if (message.author.bot || !message.guild) return;
+      // 1. Ignore other bot accounts
+      if (message.author.bot) return;
+
+      // 2. Intercept and block inbound private Direct Messages
+      if (!message.guild) {
+        const errorEmbed = createEmbed({
+          title: 'Direct Messages Disabled',
+          description: '❌ **Error:** You cannot reply or send direct messages to this bot.\n\nIf you need assistance or want to contact staff, please use the designated support channels or ticket system inside our official Discord server.',
+          color: 'error',
+        });
+
+        return await message.channel.send({ embeds: [errorEmbed] }).catch(() => {});
+      }
 
       logger.debug(`Message received from ${message.author.tag}: ${message.content}`);
 
