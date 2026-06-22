@@ -7,7 +7,7 @@ import {
     ActionRowBuilder,
     MessageFlags 
 } from 'discord.js';
-import { successEmbed } from '../../utils/embeds.js';
+import { createEmbed, successEmbed } from '../../utils/embeds.js';
 import { logEvent } from '../../utils/moderation.js';
 import { logger } from '../../utils/logger.js';
 import { sanitizeMarkdown } from '../../utils/validation.js';
@@ -23,6 +23,12 @@ export default {
                 .setDescription("The user to send a DM to")
                 .setRequired(true)
         )
+        .addAttachmentOption(option =>
+            option
+                .setName("attachment")
+                .setDescription("Attach an image or file to include in the DM")
+                .setRequired(false)
+        )
         .addBooleanOption(option =>
             option
                 .setName("anonymous")
@@ -36,6 +42,7 @@ export default {
     async execute(interaction, config, client) {
         const targetUser = interaction.options.getUser("user");
         const anonymous = interaction.options.getBoolean("anonymous") || false;
+        const attachment = interaction.options.getAttachment("attachment");
 
         // Prevent trying to message bots
         if (targetUser.bot) {
@@ -53,7 +60,7 @@ export default {
         const messageInput = new TextInputBuilder()
             .setCustomId('dm_message_text')
             .setLabel('Message Content')
-            .setStyle(TextInputStyle.Paragraph) // Allows multi-line paragraph text
+            .setStyle(TextInputStyle.Paragraph)
             .setPlaceholder('Type your paragraph message here...')
             .setMaxLength(2000)
             .setRequired(true);
@@ -75,18 +82,31 @@ export default {
             const message = submitted.fields.getTextInputValue('dm_message_text');
             const sanitized = sanitizeMarkdown(message);
 
+            // CUSTOMIZATION: Build the customized staff embed 
+            const dmEmbed = createEmbed({
+                title: anonymous ? "📬 Message from the Staff Team" : `📬 Message from ${interaction.user.tag}`,
+                description: sanitized,
+                color: '#5865F2', // Custom embed color accent (Blurple)
+            }).setFooter({
+                text: `You cannot reply to this message. | Logger ID: ${submitted.id}`
+            }).setTimestamp(); // Adds a timestamp to the message
+
+            // If an attachment exists and it's an image, render it inside the embed nicely
+            if (attachment && attachment.contentType?.startsWith('image/')) {
+                dmEmbed.setImage(attachment.url);
+            }
+
+            // Prepare sending payload
+            const payload = { embeds: [dmEmbed] };
+
+            // If it's a non-image file attachment (e.g., pdf, zip), attach it as a download link/file
+            if (attachment && !attachment.contentType?.startsWith('image/')) {
+                payload.files = [attachment.url];
+            }
+
             // Open the DM channel and deliver the notice
             const dmChannel = await targetUser.createDM();
-            await dmChannel.send({
-                embeds: [
-                    successEmbed(
-                        anonymous ? "Message from the Staff Team" : `Message from ${interaction.user.tag}`,
-                        sanitized
-                    ).setFooter({
-                        text: `You cannot reply to this message. | Logger ID: ${submitted.id}`
-                    })
-                ]
-            });
+            await dmChannel.send(payload);
 
             // Log the action systematically
             await logEvent({
@@ -96,12 +116,13 @@ export default {
                     action: "DM Sent",
                     target: `${targetUser.tag} (${targetUser.id})`,
                     executor: `${submitted.user.tag} (${submitted.user.id})`,
-                    reason: `Anonymous: ${anonymous ? 'Yes' : 'No'}`,
+                    reason: `Anonymous: ${anonymous ? 'Yes' : 'No'} | Has Attachment: ${attachment ? 'Yes' : 'No'}`,
                     metadata: {
                         userId: targetUser.id,
                         moderatorId: submitted.user.id,
                         anonymous,
-                        messageLength: sanitized.length
+                        messageLength: sanitized.length,
+                        hasFile: !!attachment
                     }
                 }
             });
@@ -110,8 +131,8 @@ export default {
             return await InteractionHelper.safeEditReply(submitted, {
                 embeds: [
                     successEmbed(
-                        "DM Sent",
-                        `Successfully sent a message to ${targetUser.tag}`
+                        "DM Sent Successfully",
+                        `Your message has been delivered to ${targetUser.tag}.`
                     ),
                 ],
             });
@@ -126,7 +147,7 @@ export default {
             // Catch DMs turned off/blocked privacy exceptions
             if (error.code === 50007) {
                 return await interaction.followUp({ 
-                    content: `❌ Could not send a DM to ${targetUser.tag}. They may have DMs disabled.`, 
+                    content: `❌ Could not send a DM to ${targetUser.tag}. They may have DMs disabled or blocked.`, 
                     flags: [MessageFlags.Ephemeral] 
                 }).catch(() => null);
             }
