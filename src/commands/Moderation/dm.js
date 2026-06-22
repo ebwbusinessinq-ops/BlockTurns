@@ -1,10 +1,18 @@
-import { SlashCommandBuilder, PermissionFlagsBits, PermissionsBitField, ChannelType, MessageFlags } from 'discord.js';
-import { createEmbed, successEmbed, infoEmbed, warningEmbed } from '../../utils/embeds.js';
+import { 
+    SlashCommandBuilder, 
+    PermissionFlagsBits, 
+    ModalBuilder, 
+    TextInputBuilder, 
+    TextInputStyle, 
+    ActionRowBuilder,
+    MessageFlags 
+} from 'discord.js';
+import { successEmbed } from '../../utils/embeds.js';
 import { logEvent } from '../../utils/moderation.js';
 import { logger } from '../../utils/logger.js';
 import { sanitizeMarkdown } from '../../utils/validation.js';
-
 import { InteractionHelper } from '../../utils/interactionHelper.js';
+
 export default {
     data: new SlashCommandBuilder()
         .setName("dm")
@@ -13,12 +21,6 @@ export default {
             option
                 .setName("user")
                 .setDescription("The user to send a DM to")
-                .setRequired(true)
-        )
-        .addStringOption(option =>
-            option
-                .setName("message")
-                .setDescription("The message to send")
                 .setRequired(true)
         )
         .addBooleanOption(option =>
@@ -32,63 +34,80 @@ export default {
     category: "moderation",
 
     async execute(interaction, config, client) {
-        const deferSuccess = await InteractionHelper.safeDefer(interaction);
-        if (!deferSuccess) {
-            logger.warn(`DM interaction defer failed`, {
-                userId: interaction.user.id,
-                guildId: interaction.guildId,
-                commandName: 'dm'
-            });
-            return;
-        }
-
-    const targetUser = interaction.options.getUser("user");
-        const message = interaction.options.getString("message");
+        const targetUser = interaction.options.getUser("user");
         const anonymous = interaction.options.getBoolean("anonymous") || false;
 
+        // Prevent trying to message bots
+        if (targetUser.bot) {
+            return await interaction.reply({ 
+                content: '❌ You cannot send DMs to bot accounts.', 
+                flags: [MessageFlags.Ephemeral] 
+            });
+        }
+
+        // 1. Create the Modal popup configuration for paragraphs
+        const modal = new ModalBuilder()
+            .setCustomId(`dm_modal_${targetUser.id}_${anonymous}`)
+            .setTitle(`DM to ${targetUser.username}`);
+
+        const messageInput = new TextInputBuilder()
+            .setCustomId('dm_message_text')
+            .setLabel('Message Content')
+            .setStyle(TextInputStyle.Paragraph) // Allows multi-line paragraph text
+            .setPlaceholder('Type your paragraph message here...')
+            .setMaxLength(2000)
+            .setRequired(true);
+
+        const firstActionRow = new ActionRowBuilder().addComponents(messageInput);
+        modal.addComponents(firstActionRow);
+
+        // 2. Display the pop-up modal directly to the staff member
+        await interaction.showModal(modal);
+
+        // 3. Catch and collect the submitted data
         try {
-            
-            if (message.length > 2000) {
-                return await replyUserError(interaction, { type: ErrorTypes.UNKNOWN, message: 'Messages must be under 2000 characters.' });
-            }
+            const filter = (i) => i.customId === `dm_modal_${targetUser.id}_${anonymous}` && i.user.id === interaction.user.id;
+            const submitted = await interaction.awaitModalSubmit({ filter, time: 300000 }); // 5 minutes window
 
-            if (targetUser.bot) {
-                return await replyUserError(interaction, { type: ErrorTypes.UNKNOWN, message: 'You cannot send DMs to bot accounts.' });
-            }
+            // Defer immediately to give processing room
+            await submitted.deferReply();
 
+            const message = submitted.fields.getTextInputValue('dm_message_text');
             const sanitized = sanitizeMarkdown(message);
 
+            // Open the DM channel and deliver the notice
             const dmChannel = await targetUser.createDM();
-            
             await dmChannel.send({
                 embeds: [
                     successEmbed(
                         anonymous ? "Message from the Staff Team" : `Message from ${interaction.user.tag}`,
                         sanitized
                     ).setFooter({
-                        text: `You cannot reply to this message. | Logger ID: ${interaction.id}`
+                        text: `You cannot reply to this message. | Logger ID: ${submitted.id}`
                     })
                 ]
             });
 
+            // Log the action systematically
             await logEvent({
-                client: interaction.client,
-                guild: interaction.guild,
+                client: submitted.client,
+                guild: submitted.guild,
                 event: {
                     action: "DM Sent",
                     target: `${targetUser.tag} (${targetUser.id})`,
-                    executor: `${interaction.user.tag} (${interaction.user.id})`,
+                    executor: `${submitted.user.tag} (${submitted.user.id})`,
                     reason: `Anonymous: ${anonymous ? 'Yes' : 'No'}`,
                     metadata: {
                         userId: targetUser.id,
-                        moderatorId: interaction.user.id,
+                        moderatorId: submitted.user.id,
                         anonymous,
                         messageLength: sanitized.length
                     }
                 }
             });
 
-            return await InteractionHelper.safeEditReply(interaction, {
+            // Confirm delivery back to the staff user
+            return await InteractionHelper.safeEditReply(submitted, {
                 embeds: [
                     successEmbed(
                         "DM Sent",
@@ -96,14 +115,21 @@ export default {
                     ),
                 ],
             });
+
         } catch (error) {
-            logger.error('DM command error:', error);
-            
-if (error.code === 50007) {
-                return await replyUserError(interaction, { type: ErrorTypes.UNKNOWN, message: 'Could not send a DM to ${targetUser.tag}. They may have DMs disabled.' });
+            if (error.code === 'InteractionCollectorError') {
+                return; // User closed modal or timed out
             }
+
+            logger.error('DM command modal process error:', error);
             
-            return await replyUserError(interaction, { type: ErrorTypes.UNKNOWN, message: 'Failed to send DM: ${error.message}' });
+            // Catch DMs turned off/blocked privacy exceptions
+            if (error.code === 50007) {
+                return await interaction.followUp({ 
+                    content: `❌ Could not send a DM to ${targetUser.tag}. They may have DMs disabled.`, 
+                    flags: [MessageFlags.Ephemeral] 
+                }).catch(() => null);
+            }
         }
     }
 };
