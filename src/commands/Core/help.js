@@ -117,8 +117,8 @@ export async function createInitialHelpMenu(client) {
         .setStyle(ButtonStyle.Danger);
 
     const supportButton = new ButtonBuilder()
-        .setLabel("Support Server")
-        .setURL("https://discord.gg/QnWNz2dKCE")
+        .setLabel("blockturns group")
+        .setURL("https://www.roblox.com/communities/32772627/BlockTurns")
         .setStyle(ButtonStyle.Link);
 
     const selectRow = createSelectMenu(
