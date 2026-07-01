@@ -5,10 +5,9 @@ import {
     TextInputBuilder, 
     TextInputStyle, 
     ActionRowBuilder,
-    MessageFlags 
+    MessageFlags,
+    EmbedBuilder
 } from 'discord.js';
-import { createEmbed, successEmbed } from '../../utils/embeds.js';
-import { logEvent } from '../../utils/moderation.js';
 import { logger } from '../../utils/logger.js';
 import { InteractionHelper } from '../../utils/interactionHelper.js';
 
@@ -68,7 +67,7 @@ export default {
         const hexRegex = /^#([A-Fa-f0-9]{6}|[A-Fa-f0-9]{3})$/;
         const embedColor = hexRegex.test(customColor) ? customColor : '#5865F2';
 
-        // Cleanly isolate individual User IDs
+        // Split by commas/spaces and filter out empty strings
         const userIds = rawUsersString.split(/[\s,]+/).filter(id => id.trim().length > 0);
 
         if (userIds.length === 0) {
@@ -113,14 +112,13 @@ export default {
             const defaultTitle = anonymous ? "📬 Official Staff Team Notice" : `📬 Message from ${interaction.user.tag}`;
             const finalTitle = customTitle ? `📬 ${customTitle}` : defaultTitle;
 
-            // Generate clean styling embed
-            const dmEmbed = createEmbed({
-                title: finalTitle,
-                description: `${formattedMessage}\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n*This is an automated delivery. Direct replies are not monitored.*`,
-                color: embedColor, 
-            }).setFooter({
-                text: `Security Log Reference ID: ${submitted.id}`
-            }).setTimestamp();
+            // FIX: Using completely native EmbedBuilder instead of framework's custom 'createEmbed'
+            const dmEmbed = new EmbedBuilder()
+                .setTitle(finalTitle)
+                .setDescription(`${formattedMessage}\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n*This is an automated delivery. Direct replies are not monitored.*`)
+                .setColor(embedColor)
+                .setFooter({ text: `Security Log Reference ID: ${submitted.id}` })
+                .setTimestamp();
 
             // Handle image rendering prioritization layers safely
             if (bannerUrl && (bannerUrl.startsWith('http://') || bannerUrl.startsWith('https://'))) {
@@ -154,25 +152,6 @@ export default {
                     await dmChannel.send(payload);
                     successfulDms.push(targetUser.tag);
 
-                    // Issue clean standard platform execution logging
-                    await logEvent({
-                        client: submitted.client,
-                        guild: submitted.guild,
-                        event: {
-                            action: "DM Sent (Bulk Premium)",
-                            target: `${targetUser.tag} (${targetUser.id})`,
-                            executor: `${submitted.user.tag} (${submitted.user.id})`,
-                            reason: `Title: ${finalTitle} | Color: ${embedColor}`,
-                            metadata: {
-                                userId: targetUser.id,
-                                moderatorId: submitted.user.id,
-                                anonymous,
-                                messageLength: formattedMessage.length,
-                                hasFile: !!attachment
-                            }
-                        }
-                    });
-
                 } catch (err) {
                     logger.error(`Failed to bulk DM user ID ${id}:`, err);
                     if (err.code === 50007) {
@@ -183,7 +162,7 @@ export default {
                 }
             }
 
-            // Assemble execution metric presentation summaries
+            // Assemble execution metric presentation summaries using native structures
             let resultDescription = `### Delivery Summary:\n✅ **Successful:** ${successfulDms.length}\n❌ **Failed:** ${failedDms.length}`;
             
             if (successfulDms.length > 0) {
@@ -193,14 +172,15 @@ export default {
                 resultDescription += `\n\n**Failed for:**\n${failedDms.map(f => `• ${f}`).join('\n')}`;
             }
 
+            const nativeReportEmbed = new EmbedBuilder()
+                .setTitle("⚙️ Bulk DM Processing Complete")
+                .setDescription(resultDescription)
+                .setColor("#2ECC71")
+                .setTimestamp();
+
             // Deliver definitive confirmation summary block back to administrator workspace
             return await InteractionHelper.safeEditReply(submitted, {
-                embeds: [
-                    successEmbed(
-                        "Bulk DM Processing Complete",
-                        resultDescription
-                    ),
-                ],
+                embeds: [nativeReportEmbed],
             });
 
         } catch (error) {
