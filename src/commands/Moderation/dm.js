@@ -10,17 +10,16 @@ import {
 import { createEmbed, successEmbed } from '../../utils/embeds.js';
 import { logEvent } from '../../utils/moderation.js';
 import { logger } from '../../utils/logger.js';
-import { sanitizeMarkdown } from '../../utils/validation.js';
 import { InteractionHelper } from '../../utils/interactionHelper.js';
 
 export default {
     data: new SlashCommandBuilder()
         .setName("dm")
-        .setDescription("Send a direct message to a user (Staff only)")
-        .addUserOption(option =>
+        .setDescription("Send a formatted direct message to multiple users (Staff only)")
+        .addStringOption(option =>
             option
-                .setName("user")
-                .setDescription("The user to send a DM to")
+                .setName("users")
+                .setDescription("Provide User IDs separated by spaces or commas")
                 .setRequired(true)
         )
         .addAttachmentOption(option =>
@@ -40,28 +39,32 @@ export default {
     category: "moderation",
 
     async execute(interaction, config, client) {
-        const targetUser = interaction.options.getUser("user");
+        const rawUsersString = interaction.options.getString("users");
         const anonymous = interaction.options.getBoolean("anonymous") || false;
         const attachment = interaction.options.getAttachment("attachment");
 
-        // Prevent trying to message bots
-        if (targetUser.bot) {
-            return await interaction.reply({ 
-                content: '❌ You cannot send DMs to bot accounts.', 
-                flags: [MessageFlags.Ephemeral] 
+        // Split by commas or spaces and filter out empty strings
+        const userIds = rawUsersString.split(/[\s,]+/).filter(id => id.trim().length > 0);
+
+        if (userIds.length === 0) {
+            return await interaction.reply({
+                content: '❌ Please provide at least one valid User ID.',
+                flags: [MessageFlags.Ephemeral]
             });
         }
 
+        const sessionToken = Math.random().toString(36).substring(2, 8);
+
         // 1. Create the Modal popup configuration for paragraphs
         const modal = new ModalBuilder()
-            .setCustomId(`dm_modal_${targetUser.id}_${anonymous}`)
-            .setTitle(`DM to ${targetUser.username}`);
+            .setCustomId(`dm_modal_${sessionToken}`)
+            .setTitle(`Send Bulk DM (${userIds.length} targets)`);
 
         const messageInput = new TextInputBuilder()
             .setCustomId('dm_message_text')
-            .setLabel('Message Content')
+            .setLabel('Message Content (Supports Markdown)')
             .setStyle(TextInputStyle.Paragraph)
-            .setPlaceholder('Type your paragraph message here...')
+            .setPlaceholder('**Bold**, *Italics*, __Underlines__, \nShift+Enter for new lines...\n\n> Blockquotes work too!')
             .setMaxLength(2000)
             .setRequired(true);
 
@@ -73,84 +76,105 @@ export default {
 
         // 3. Catch and collect the submitted data
         try {
-            const filter = (i) => i.customId === `dm_modal_${targetUser.id}_${anonymous}` && i.user.id === interaction.user.id;
+            const filter = (i) => i.customId === `dm_modal_${sessionToken}` && i.user.id === interaction.user.id;
             const submitted = await interaction.awaitModalSubmit({ filter, time: 300000 }); // 5 minutes window
 
             // Defer immediately to give processing room
             await submitted.deferReply();
 
-            const message = submitted.fields.getTextInputValue('dm_message_text');
-            const sanitized = sanitizeMarkdown(message);
+            // RELEVANT CHANGE: Bypassing strict markdown escaping so formatting renders correctly
+            const formattedMessage = submitted.fields.getTextInputValue('dm_message_text');
 
-            // CUSTOMIZATION: Build the customized staff embed 
+            // Build the customized staff embed 
             const dmEmbed = createEmbed({
                 title: anonymous ? "📬 Message from the Staff Team" : `📬 Message from ${interaction.user.tag}`,
-                description: sanitized,
-                color: '#5865F2', // Custom embed color accent (Blurple)
+                description: formattedMessage, // Renders your lines, bolds, underlines, etc.
+                color: '#5865F2', 
             }).setFooter({
                 text: `You cannot reply to this message. | Logger ID: ${submitted.id}`
-            }).setTimestamp(); // Adds a timestamp to the message
+            }).setTimestamp();
 
-            // If an attachment exists and it's an image, render it inside the embed nicely
             if (attachment && attachment.contentType?.startsWith('image/')) {
                 dmEmbed.setImage(attachment.url);
             }
 
-            // Prepare sending payload
             const payload = { embeds: [dmEmbed] };
 
-            // If it's a non-image file attachment (e.g., pdf, zip), attach it as a download link/file
             if (attachment && !attachment.contentType?.startsWith('image/')) {
                 payload.files = [attachment.url];
             }
 
-            // Open the DM channel and deliver the notice
-            const dmChannel = await targetUser.createDM();
-            await dmChannel.send(payload);
+            const successfulDms = [];
+            const failedDms = [];
 
-            // Log the action systematically
-            await logEvent({
-                client: submitted.client,
-                guild: submitted.guild,
-                event: {
-                    action: "DM Sent",
-                    target: `${targetUser.tag} (${targetUser.id})`,
-                    executor: `${submitted.user.tag} (${submitted.user.id})`,
-                    reason: `Anonymous: ${anonymous ? 'Yes' : 'No'} | Has Attachment: ${attachment ? 'Yes' : 'No'}`,
-                    metadata: {
-                        userId: targetUser.id,
-                        moderatorId: submitted.user.id,
-                        anonymous,
-                        messageLength: sanitized.length,
-                        hasFile: !!attachment
+            // Loop through each ID provided
+            for (const id of userIds) {
+                try {
+                    const targetUser = await client.users.fetch(id);
+
+                    if (targetUser.bot) {
+                        failedDms.push(`${id} (Bot account)`);
+                        continue;
+                    }
+
+                    const dmChannel = await targetUser.createDM();
+                    await dmChannel.send(payload);
+                    successfulDms.push(targetUser.tag);
+
+                    // Log the action systematically
+                    await logEvent({
+                        client: submitted.client,
+                        guild: submitted.guild,
+                        event: {
+                            action: "DM Sent (Bulk)",
+                            target: `${targetUser.tag} (${targetUser.id})`,
+                            executor: `${submitted.user.tag} (${submitted.user.id})`,
+                            reason: `Anonymous: ${anonymous ? 'Yes' : 'No'} | Has Attachment: ${attachment ? 'Yes' : 'No'}`,
+                            metadata: {
+                                userId: targetUser.id,
+                                moderatorId: submitted.user.id,
+                                anonymous,
+                                messageLength: formattedMessage.length,
+                                hasFile: !!attachment
+                            }
+                        }
+                    });
+
+                } catch (err) {
+                    logger.error(`Failed to bulk DM user ID ${id}:`, err);
+                    if (err.code === 50007) {
+                        failedDms.push(`${id} (DMs closed/blocked)`);
+                    } else {
+                        failedDms.push(`${id} (Invalid ID/Fetch error)`);
                     }
                 }
-            });
+            }
+
+            // Construct feedback summary
+            let resultDescription = `### Delivery Summary:\n✅ **Successful:** ${successfulDms.length}\n❌ **Failed:** ${failedDms.length}`;
+            
+            if (successfulDms.length > 0) {
+                resultDescription += `\n\n**Sent to:** ${successfulDms.map(tag => `\`${tag}\``).join(', ')}`;
+            }
+            if (failedDms.length > 0) {
+                resultDescription += `\n\n**Failed for:**\n${failedDms.map(f => `• ${f}`).join('\n')}`;
+            }
 
             // Confirm delivery back to the staff user
             return await InteractionHelper.safeEditReply(submitted, {
                 embeds: [
                     successEmbed(
-                        "DM Sent Successfully",
-                        `Your message has been delivered to ${targetUser.tag}.`
+                        "Bulk DM Processing Complete",
+                        resultDescription
                     ),
                 ],
             });
 
         } catch (error) {
             if (error.code === 'InteractionCollectorError') {
-                return; // User closed modal or timed out
+                return;
             }
-
             logger.error('DM command modal process error:', error);
-            
-            // Catch DMs turned off/blocked privacy exceptions
-            if (error.code === 50007) {
-                return await interaction.followUp({ 
-                    content: `❌ Could not send a DM to ${targetUser.tag}. They may have DMs disabled or blocked.`, 
-                    flags: [MessageFlags.Ephemeral] 
-                }).catch(() => null);
-            }
         }
     }
 };
