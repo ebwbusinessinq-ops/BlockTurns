@@ -5,9 +5,10 @@ import {
     TextInputBuilder, 
     TextInputStyle, 
     ActionRowBuilder,
-    MessageFlags 
+    MessageFlags,
+    EmbedBuilder
 } from 'discord.js';
-import { createEmbed, successEmbed } from '../../utils/embeds.js';
+import { createEmbed } from '../../utils/embeds.js';
 import { logEvent } from '../../utils/moderation.js';
 import { logger } from '../../utils/logger.js';
 import { InteractionHelper } from '../../utils/interactionHelper.js';
@@ -64,11 +65,9 @@ export default {
         const anonymous = interaction.options.getBoolean("anonymous") || false;
         const attachment = interaction.options.getAttachment("attachment");
 
-        // Validate hex color format safely
         const hexRegex = /^#([A-Fa-f0-9]{6}|[A-Fa-f0-9]{3})$/;
         const embedColor = hexRegex.test(customColor) ? customColor : '#5865F2';
 
-        // Cleanly isolate individual User IDs
         const userIds = rawUsersString.split(/[\s,]+/).filter(id => id.trim().length > 0);
 
         if (userIds.length === 0) {
@@ -80,7 +79,6 @@ export default {
 
         const sessionToken = Math.random().toString(36).substring(2, 8);
 
-        // 1. Configure the Modal UI pop-up layout
         const modal = new ModalBuilder()
             .setCustomId(`dm_modal_${sessionToken}`)
             .setTitle(`Message Content Configuration`);
@@ -96,24 +94,19 @@ export default {
         const firstActionRow = new ActionRowBuilder().addComponents(messageInput);
         modal.addComponents(firstActionRow);
 
-        // 2. Display the modal screen directly to the execution staff member
         await interaction.showModal(modal);
 
-        // 3. Listen for and resolve data submissions
         try {
             const filter = (i) => i.customId === `dm_modal_${sessionToken}` && i.user.id === interaction.user.id;
-            const submitted = await interaction.awaitModalSubmit({ filter, time: 300000 }); // 5 minutes window
+            const submitted = await interaction.awaitModalSubmit({ filter, time: 300000 });
 
-            // Immediately defer processing state to prevent structural timeout errors
             await submitted.deferReply();
 
             const formattedMessage = submitted.fields.getTextInputValue('dm_message_text');
 
-            // Header structural logic configuration
             const defaultTitle = anonymous ? "📬 Official Staff Team Notice" : `📬 Message from ${interaction.user.tag}`;
             const finalTitle = customTitle ? `📬 ${customTitle}` : defaultTitle;
 
-            // Generate clean styling embed
             const dmEmbed = createEmbed({
                 title: finalTitle,
                 description: `${formattedMessage}\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n*This is an automated delivery. Direct replies are not monitored.*`,
@@ -122,7 +115,6 @@ export default {
                 text: `Security Log Reference ID: ${submitted.id}`
             }).setTimestamp();
 
-            // Handle image rendering prioritization layers safely
             if (bannerUrl && (bannerUrl.startsWith('http://') || bannerUrl.startsWith('https://'))) {
                 dmEmbed.setImage(bannerUrl);
             }
@@ -140,7 +132,6 @@ export default {
             const successfulDms = [];
             const failedDms = [];
 
-            // Execute transactional loops across parsed data sets
             for (const id of userIds) {
                 try {
                     const targetUser = await client.users.fetch(id);
@@ -154,7 +145,7 @@ export default {
                     await dmChannel.send(payload);
                     successfulDms.push(targetUser.tag);
 
-                    // Issue clean standard platform execution logging
+                    // Safely try logging, catch silently if logging infrastructure config is missing
                     await logEvent({
                         client: submitted.client,
                         guild: submitted.guild,
@@ -171,7 +162,7 @@ export default {
                                 hasFile: !!attachment
                             }
                         }
-                    });
+                    }).catch(() => null);
 
                 } catch (err) {
                     logger.error(`Failed to bulk DM user ID ${id}:`, err);
@@ -183,7 +174,7 @@ export default {
                 }
             }
 
-            // Assemble execution metric presentation summaries
+            // Build native Embed confirmation structure completely independent of custom framework config files
             let resultDescription = `### Delivery Summary:\n✅ **Successful:** ${successfulDms.length}\n❌ **Failed:** ${failedDms.length}`;
             
             if (successfulDms.length > 0) {
@@ -193,19 +184,19 @@ export default {
                 resultDescription += `\n\n**Failed for:**\n${failedDms.map(f => `• ${f}`).join('\n')}`;
             }
 
-            // Deliver definitive confirmation summary block back to administrator workspace
+            const nativeReportEmbed = new EmbedBuilder()
+                .setTitle("⚙️ Bulk DM Processing Complete")
+                .setDescription(resultDescription)
+                .setColor("#2ECC71")
+                .setTimestamp();
+
             return await InteractionHelper.safeEditReply(submitted, {
-                embeds: [
-                    successEmbed(
-                        "Bulk DM Processing Complete",
-                        resultDescription
-                    ),
-                ],
+                embeds: [nativeReportEmbed],
             });
 
         } catch (error) {
             if (error.code === 'InteractionCollectorError') {
-                return; // Suppress logs if modal was simply closed or timed out
+                return;
             }
             logger.error('DM command modal process error:', error);
         }
