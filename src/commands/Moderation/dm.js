@@ -15,23 +15,41 @@ import { InteractionHelper } from '../../utils/interactionHelper.js';
 export default {
     data: new SlashCommandBuilder()
         .setName("dm")
-        .setDescription("Send a formatted direct message to multiple users (Staff only)")
+        .setDescription("Send a beautifully formatted direct message to multiple users")
         .addStringOption(option =>
             option
-                .setName("users")
+                .setName("user ids")
                 .setDescription("Provide User IDs separated by spaces or commas")
                 .setRequired(true)
+        )
+        .addStringOption(option =>
+            option
+                .setName("title")
+                .setDescription("Custom title for the embed (e.g., 'Official Server Notice')")
+                .setRequired(false)
+        )
+        .addStringOption(option =>
+            option
+                .setName("color")
+                .setDescription("Hex color code for the side border (e.g., #ff0000 for Red)")
+                .setRequired(false)
         )
         .addAttachmentOption(option =>
             option
                 .setName("attachment")
-                .setDescription("Attach an image or file to include in the DM")
+                .setDescription("Attach an image or file to include at the bottom")
+                .setRequired(false)
+        )
+        .addStringOption(option =>
+            option
+                .setName("banner_url")
+                .setDescription("Direct image URL to display as a large top banner")
                 .setRequired(false)
         )
         .addBooleanOption(option =>
             option
                 .setName("anonymous")
-                .setDescription("Send the message anonymously (default: false)")
+                .setDescription("Hide your staff name from the message (default: false)")
                 .setRequired(false)
         )
         .setDefaultMemberPermissions(PermissionFlagsBits.ModerateMembers)
@@ -40,10 +58,17 @@ export default {
 
     async execute(interaction, config, client) {
         const rawUsersString = interaction.options.getString("users");
+        const customTitle = interaction.options.getString("title");
+        const customColor = interaction.options.getString("color") || '#5865F2'; // Default Blurple
+        const bannerUrl = interaction.options.getString("banner_url");
         const anonymous = interaction.options.getBoolean("anonymous") || false;
         const attachment = interaction.options.getAttachment("attachment");
 
-        // Split by commas or spaces and filter out empty strings
+        // Validate hex color if provided
+        const hexRegex = /^#([A-Fa-f0-9]{6}|[A-Fa-f0-9]{3})$/;
+        const embedColor = hexRegex.test(customColor) ? customColor : '#5865F2';
+
+        // Split by commas/spaces and filter out empty strings
         const userIds = rawUsersString.split(/[\s,]+/).filter(id => id.trim().length > 0);
 
         if (userIds.length === 0) {
@@ -58,13 +83,13 @@ export default {
         // 1. Create the Modal popup configuration for paragraphs
         const modal = new ModalBuilder()
             .setCustomId(`dm_modal_${sessionToken}`)
-            .setTitle(`Send Bulk DM (${userIds.length} targets)`);
+            .setTitle(`Message Content Configuration`);
 
         const messageInput = new TextInputBuilder()
             .setCustomId('dm_message_text')
-            .setLabel('Message Content (Supports Markdown)')
+            .setLabel('Message Body (Supports Discord Markdown)')
             .setStyle(TextInputStyle.Paragraph)
-            .setPlaceholder('**Bold**, *Italics*, __Underlines__, \nShift+Enter for new lines...\n\n> Blockquotes work too!')
+            .setPlaceholder('### 📢 Important Announcement\n\nWrite your primary message here...\n\nUse standard markdown elements to decorate sections.')
             .setMaxLength(2000)
             .setRequired(true);
 
@@ -82,24 +107,34 @@ export default {
             // Defer immediately to give processing room
             await submitted.deferReply();
 
-            // RELEVANT CHANGE: Bypassing strict markdown escaping so formatting renders correctly
             const formattedMessage = submitted.fields.getTextInputValue('dm_message_text');
 
-            // Build the customized staff embed 
+            // Default Title Logic if none provided
+            const defaultTitle = anonymous ? "📬 Official Staff Team Notice" : `📬 Message from ${interaction.user.tag}`;
+            const finalTitle = customTitle ? `📬 ${customTitle}` : defaultTitle;
+
+            // CUSTOMIZATION: Premium layout configuration
             const dmEmbed = createEmbed({
-                title: anonymous ? "📬 Message from the Staff Team" : `📬 Message from ${interaction.user.tag}`,
-                description: formattedMessage, // Renders your lines, bolds, underlines, etc.
-                color: '#5865F2', 
+                title: finalTitle,
+                description: `${formattedMessage}\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n*This is an automated delivery. Direct replies are not monitored.*`,
+                color: embedColor, 
             }).setFooter({
-                text: `You cannot reply to this message. | Logger ID: ${submitted.id}`
+                text: `Security Log Reference ID: ${submitted.id}`
             }).setTimestamp();
 
-            if (attachment && attachment.contentType?.startsWith('image/')) {
+            // Set a top banner if a valid link was passed
+            if (bannerUrl && (bannerUrl.startsWith('http://') || bannerUrl.startsWith('https://'))) {
+                dmEmbed.setImage(bannerUrl);
+            }
+
+            // If an attachment image exists and NO banner was set, put it in the image slot
+            if (attachment && attachment.contentType?.startsWith('image/') && !bannerUrl) {
                 dmEmbed.setImage(attachment.url);
             }
 
             const payload = { embeds: [dmEmbed] };
 
+            // Handle downloadable file fallback attachment
             if (attachment && !attachment.contentType?.startsWith('image/')) {
                 payload.files = [attachment.url];
             }
@@ -126,10 +161,10 @@ export default {
                         client: submitted.client,
                         guild: submitted.guild,
                         event: {
-                            action: "DM Sent (Bulk)",
+                            action: "DM Sent (Bulk Premium)",
                             target: `${targetUser.tag} (${targetUser.id})`,
                             executor: `${submitted.user.tag} (${submitted.user.id})`,
-                            reason: `Anonymous: ${anonymous ? 'Yes' : 'No'} | Has Attachment: ${attachment ? 'Yes' : 'No'}`,
+                            reason: `Title: ${finalTitle} | Color: ${embedColor}`,
                             metadata: {
                                 userId: targetUser.id,
                                 moderatorId: submitted.user.id,
